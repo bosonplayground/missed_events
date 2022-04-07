@@ -1,6 +1,6 @@
 # Missed events
 
-This repository has the goal to detect whether ethers.js v5.5.3 misses any smart contract events in comparison to web3.js
+This repository has the goal to detect whether ethers.js v5.5.3 misses any smart contract events in comparison to web3.js. We'll use different protocols as well.
 
 ## Prerequisites
 

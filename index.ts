@@ -23,6 +23,7 @@ async function listenEthersContractEvents({ eventName, contract, numTransactions
                 } else {
                     const { transactionHash } = otherArgs;
                     if (set.has(transactionHash)) {
+                        // if a transaction contains multiple transfer events, then we only log the hash
                         console.log(`${k}[${label}] transaction already exists!`, transactionHash)
                     } else {
                         set.add(transactionHash);
@@ -49,8 +50,8 @@ async function listenWeb3ContractEvents({ eventName, contract, numTransactionsTo
                         resolve();
                     } else {
                         const { transactionHash } = eventData;
-
                         if (set.has(transactionHash)) {
+                            // if a transaction contains multiple transfer events, then we only log the hash
                             console.log(`${j}[${label}] transaction already exists!`, transactionHash)
                         } else {
                             set.add(transactionHash);
@@ -128,7 +129,8 @@ async function main() {
 
     const otherSets = [ethersHashesRpcInfuraSet, ethersHashesWssInfuraSet, web3HashesWssInfuraSet]; // all except the first one to compare
 
-    const ethersHashesArr = [...ethersHashesRpcAlchemySet.values()]; // first set
+    // we will sort all sets/arrays, pick one, first the first and last common hashes and then slice the other arrays
+    const ethersHashesArr = [...ethersHashesRpcAlchemySet.values()].sort(); // first set
     const firstCommonHash = ethersHashesArr.find(hash => otherSets.every((set) => set.has(hash)));
     const lastCommonHash = [...ethersHashesArr].reverse().find(hash => otherSets.every((set) => set.has(hash)));
     if (!firstCommonHash) {
@@ -141,13 +143,13 @@ async function main() {
     }
     const ethersHashesRpcAlchemyFixedSet: Set<string> = new Set(ethersHashesArr.slice(ethersHashesArr.indexOf(firstCommonHash), ethersHashesArr.lastIndexOf(lastCommonHash) + 1));
 
-    const ethersHashesRpcInfuraArr = [...ethersHashesRpcInfuraSet.values()];
+    const ethersHashesRpcInfuraArr = [...ethersHashesRpcInfuraSet.values()].sort();
     const ethersHashesRpcInfuraFixedSet: Set<string> = new Set(ethersHashesRpcInfuraArr.slice(ethersHashesRpcInfuraArr.indexOf(firstCommonHash), ethersHashesRpcInfuraArr.lastIndexOf(lastCommonHash) + 1));
 
-    const ethersHashesWssInfuraArr = [...ethersHashesWssInfuraSet.values()];
+    const ethersHashesWssInfuraArr = [...ethersHashesWssInfuraSet.values()].sort();
     const ethersHashesWssInfuraFixedSet: Set<string> = new Set(ethersHashesWssInfuraArr.slice(ethersHashesWssInfuraArr.indexOf(firstCommonHash), ethersHashesWssInfuraArr.lastIndexOf(lastCommonHash) + 1));
 
-    const web3HashesWssInfuraArr = [...web3HashesWssInfuraSet.values()];
+    const web3HashesWssInfuraArr = [...web3HashesWssInfuraSet.values()].sort();
     const web3HashesWssInfuraFixedSet: Set<string> = new Set(web3HashesWssInfuraArr.slice(web3HashesWssInfuraArr.indexOf(firstCommonHash), web3HashesWssInfuraArr.lastIndexOf(lastCommonHash) + 1));
 
     console.log('ethersHashesRpcAlchemyFixedSet.size', ethersHashesRpcAlchemyFixedSet.size);
@@ -155,73 +157,50 @@ async function main() {
     console.log('ethersHashesWssInfuraFixedSet.size', ethersHashesWssInfuraFixedSet.size);
     console.log('web3HashesWssInfuraFixedSet.size', web3HashesWssInfuraFixedSet.size);
 
-    let missingInWeb3wssInfura = 0;
-    let missingInEthersRpcAlchemy = 0;
-    let missingInEthersRpcInfura = 0;
-    let missingInEthersWssInfura = 0;
     for (const hash of ethersHashesRpcAlchemyFixedSet) {
         if (!ethersHashesRpcInfuraFixedSet.has(hash)) {
             console.log('hash in ethers rpc alchemy but not in ethers rpc infura set', hash);
-            missingInEthersRpcInfura++;
         }
         if (!ethersHashesWssInfuraFixedSet.has(hash)) {
             console.log('hash in ethers rpc alchemy but not in ethers wss infura set', hash);
-            missingInEthersWssInfura++;
         }
         if (!web3HashesWssInfuraFixedSet.has(hash)) {
             console.log('hash in ethers rpc alchemy but not in web3 wss infura set', hash);
-            missingInWeb3wssInfura++;
         }
     }
     for (const hash of ethersHashesRpcInfuraFixedSet) {
         if (!ethersHashesRpcAlchemyFixedSet.has(hash)) {
             console.log('hash in ethers rpc infura but not in ethers rpc alchemy', hash);
-            missingInEthersRpcAlchemy++;
         }
         if (!ethersHashesWssInfuraFixedSet.has(hash)) {
             console.log('hash in ethers rpc infura but not in ethers wss infura set', hash);
-            missingInEthersWssInfura++;
         }
         if (!web3HashesWssInfuraFixedSet.has(hash)) {
             console.log('hash in ethers rpc infura but not in web3', hash);
-            missingInWeb3wssInfura++;
         }
     }
     for (const hash of ethersHashesWssInfuraFixedSet) {
         if (!ethersHashesRpcAlchemyFixedSet.has(hash)) {
             console.log('hash in ethers wss infura but not in ethers rpc alchemy', hash);
-            missingInEthersRpcAlchemy++;
         }
         if (!ethersHashesRpcInfuraFixedSet.has(hash)) {
             console.log('hash in ethers wss infura but not in ethers rpc infura set', hash);
-            missingInEthersRpcInfura++;
         }
         if (!web3HashesWssInfuraFixedSet.has(hash)) {
             console.log('hash in ethers wss infura but not in web3 wss infura set', hash);
-            missingInWeb3wssInfura++;
         }
     }
     for (const hash of web3HashesWssInfuraFixedSet) {
         if (!ethersHashesRpcAlchemyFixedSet.has(hash)) {
             console.log('hash in ethers wss infura but not in ethers rpc alchemy', hash);
-            missingInEthersRpcAlchemy++;
         }
         if (!ethersHashesRpcInfuraFixedSet.has(hash)) {
             console.log('hash in ethers wss infura but not in ethers rpc infura set', hash);
-            missingInEthersRpcInfura++;
         }
         if (!ethersHashesWssInfuraFixedSet.has(hash)) {
             console.log('hash in ethers wss infura but not in ethers wss infura set', hash);
-            missingInEthersWssInfura++;
         }
     }
-
-    console.log({
-        missingInWeb3wssInfura,
-        missingInEthersRpcAlchemy,
-        missingInEthersRpcInfura,
-        missingInEthersWssInfura,
-    });
 
     console.log('ORIGINAL SETS');
     console.log('original ethersHashesRpcAlchemySet', JSON.stringify([...ethersHashesRpcAlchemySet.values()]));
@@ -230,10 +209,10 @@ async function main() {
     console.log('original web3HashesWssInfuraSet', JSON.stringify([...web3HashesWssInfuraSet.values()]));
 
     console.log('FIXED SETS');
-    console.log('fixed ethersHashesRpcAlchemySet', JSON.stringify([...ethersHashesRpcAlchemyFixedSet.values()]));
-    console.log('fixed ethersHashesRpcInfuraSet', JSON.stringify([...ethersHashesRpcInfuraFixedSet.values()]));
-    console.log('fixed ethersHashesWssInfuraSet', JSON.stringify([...ethersHashesWssInfuraFixedSet.values()]));
-    console.log('fixed web3HashesWssInfuraSet', JSON.stringify([...web3HashesWssInfuraFixedSet.values()]));
+    console.log('fixed ethersHashesRpcAlchemyFixedSet', JSON.stringify([...ethersHashesRpcAlchemyFixedSet.values()]));
+    console.log('fixed ethersHashesRpcInfuraFixedSet', JSON.stringify([...ethersHashesRpcInfuraFixedSet.values()]));
+    console.log('fixed ethersHashesWssInfuraFixedSet', JSON.stringify([...ethersHashesWssInfuraFixedSet.values()]));
+    console.log('fixed web3HashesWssInfuraFixedSet', JSON.stringify([...web3HashesWssInfuraFixedSet.values()]));
 }
 
 main().then(() => {
