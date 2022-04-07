@@ -11,26 +11,39 @@ const contractAbiStr = process.env.CONTRACT_ABI as string;
 
 const contractAbi = JSON.parse(contractAbiStr);
 
-async function listenEthersContractEvents({ eventName, contract, numTransactionsToCheck, set, label }: { eventName: string, contract: ethers.Contract, numTransactionsToCheck: number, set: Set<string>, label: string }) {
+async function listenEthersContractEvents({ eventName, contract, numBlocksToCheck, map, label, initializeBlockEntry }: { eventName: string, contract: ethers.Contract, numBlocksToCheck: number, map: Map<number, Map<string, Set<string>>>, label: string, initializeBlockEntry: (map: Map<number, Map<string, Set<string>>>, blockNumber: number) => void }) {
     return new Promise<void>((resolve, reject) => {
         try {
             let k = 0;
             contract.on(eventName, (_from: unknown, _to: unknown, _qty: unknown, otherArgs: Record<string, unknown> & { transactionHash: string }) => {
-
-                if (k >= numTransactionsToCheck) {
+                const { transactionHash, blockNumber: _blockNumber } = otherArgs;
+                const blockNumber = _blockNumber as number;
+                if (!map.has(blockNumber) || (map.has(blockNumber) && !map.get(blockNumber)!.get(label)?.size)) {
+                    k++;
+                }
+                if (k > numBlocksToCheck) {
                     contract.removeAllListeners();
-                    resolve();
-                } else {
-                    const { transactionHash } = otherArgs;
+                    return resolve();
+                }
+                let set;
+                if (map.has(blockNumber)) {
+                    const providersMap = map.get(blockNumber);
+                    set = providersMap?.get(label)!;
                     if (set.has(transactionHash)) {
                         // if a transaction contains multiple transfer events, then we only log the hash
-                        console.log(`${k}[${label}] transaction already exists!`, transactionHash)
+                        console.log(`${k}[${label}][blockNumber=${blockNumber}] transaction already exists!`, transactionHash)
                     } else {
+                        console.log(`${k}[${label}][blockNumber=${blockNumber}] received transaction with hash`, transactionHash)
                         set.add(transactionHash);
-                        console.log(`${k}[${label}] received transaction with hash`, transactionHash)
-                        k++;
                     }
+                } else {
+                    initializeBlockEntry(map, blockNumber);
+                    const providersMap = map.get(blockNumber);
+                    set = providersMap?.get(label)!;
+                    set.add(transactionHash);
+                    console.log(`${k}[${label}][blockNumber=${blockNumber}] received transaction with hash`, transactionHash)
                 }
+                console.log(`${k}[${label}][blockNumber=${blockNumber}] set size = ${set.size}`)
             });
         } catch (err) {
             reject(err);
@@ -38,29 +51,38 @@ async function listenEthersContractEvents({ eventName, contract, numTransactions
     })
 }
 
-async function listenWeb3ContractEvents({ eventName, contract, numTransactionsToCheck, set, label }: { eventName: string, contract: InstanceType<Web3['eth']['Contract']>, numTransactionsToCheck: number, set: Set<string>, label: string }) {
+async function listenWeb3ContractEvents({ eventName, contract, numBlocksToCheck, map, label, initializeBlockEntry }: { eventName: string, contract: InstanceType<Web3['eth']['Contract']>, numBlocksToCheck: number, map: Map<number, Map<string, Set<string>>>, label: string, initializeBlockEntry: (map: Map<number, Map<string, Set<string>>>, blockNumber: number) => void }) {
     return new Promise<void>((resolve, reject) => {
         try {
-            let j = 0;
-            contract.events[eventName](null, (error: Error, eventData: Record<string, any>) => {
-                if (error) {
-                    console.log('received transaction with error', error);
-                } else {
-                    if (j >= numTransactionsToCheck) {
-                        resolve();
-                    } else {
-                        const { transactionHash } = eventData;
-                        if (set.has(transactionHash)) {
-                            // if a transaction contains multiple transfer events, then we only log the hash
-                            console.log(`${j}[${label}] transaction already exists!`, transactionHash)
-                        } else {
-                            set.add(transactionHash);
-                            console.log(`${j}[${label}] received transaction with hash`, transactionHash)
-                            j++;
-                        }
-
-                    }
+            let k = 0;
+            contract.events[eventName](null, (error: Error, otherArgs: Record<string, any>) => {
+                const { transactionHash, blockNumber: _blockNumber } = otherArgs;
+                const blockNumber = _blockNumber as number;
+                if (!map.has(blockNumber) || (map.has(blockNumber) && !map.get(blockNumber)!.get(label)?.size)) {
+                    k++;
                 }
+                if (k > numBlocksToCheck) {
+                    return resolve();
+                }
+                let set;
+                if (map.has(blockNumber)) {
+                    const providersMap = map.get(blockNumber);
+                    set = providersMap?.get(label)!;
+                    if (set.has(transactionHash)) {
+                        // if a transaction contains multiple transfer events, then we only log the hash
+                        console.log(`${k}[${label}][blockNumber=${blockNumber}] transaction already exists!`, transactionHash)
+                    } else {
+                        console.log(`${k}[${label}][blockNumber=${blockNumber}] received transaction with hash`, transactionHash)
+                        set.add(transactionHash);
+                    }
+                } else {
+                    initializeBlockEntry(map, blockNumber);
+                    const providersMap = map.get(blockNumber);
+                    set = providersMap?.get(label)!;
+                    set.add(transactionHash);
+                    console.log(`${k}[${label}][blockNumber=${blockNumber}] received transaction with hash`, transactionHash)
+                }
+                console.log(`${k}[${label}][blockNumber=${blockNumber}] set size = ${set.size}`)
             });
         } catch (err) {
             reject(err);
@@ -68,17 +90,33 @@ async function listenWeb3ContractEvents({ eventName, contract, numTransactionsTo
     })
 }
 
+/**
+ * Given different providers (infura, alchemy), protocols (wss, https) and libraries (ethers.js, web3.js), we collect an X amount of blocks
+ * by listening to the Transfer event on a smart contract. We then disregard the records which have no data for some providers due to race conditions and
+ * for the block which we have data for all of them, we compare all the transactions.
+ */ 
 async function main() {
     const wssInfuraUrl = `wss://mainnet.infura.io/ws/v3/${infuraApiKey}`;
     const httpInfuraUrl = `https://mainnet.infura.io/v3/${infuraApiKey}`;
 
     const eventName = 'Transfer';
-    const numTransactionsToCheck = 1000;
+    const numBlocksToCheck = 80;
 
-    const ethersHashesRpcAlchemySet = new Set<string>();
-    const ethersHashesRpcInfuraSet = new Set<string>();
-    const ethersHashesWssInfuraSet = new Set<string>();
-    const web3HashesWssInfuraSet = new Set<string>();
+    const blockMap = new Map<number, Map<string, Set<string>>>();
+    const ethersJsRpcAlchemyLabel = 'ethers.js-rpc-alchemy';
+    const ethersJsRpcInfuraLabel = 'ethers.js-rpc-infura';
+    const ethersJsWssInfuraLabel = 'ethers.js-wss-infura';
+    const web3JsWssInfuraLabel = 'web3.js-wss-infura';
+
+    const initializeBlockEntry = (map: typeof blockMap, blockNumber: number): void => {
+        const setsToTxsMap = new Map();
+        setsToTxsMap.set(ethersJsRpcAlchemyLabel, new Set());
+        setsToTxsMap.set(ethersJsRpcInfuraLabel, new Set());
+        setsToTxsMap.set(ethersJsWssInfuraLabel, new Set());
+        setsToTxsMap.set(web3JsWssInfuraLabel, new Set());
+        map.set(blockNumber, setsToTxsMap);
+    }
+
 
     const jsonRpcProviderAlchemy = new ethers.providers.JsonRpcProvider(jsonRpcUrlAlchemy);
     const ethersJsonRpcAlchemyContract = new ethers.Contract(contractAddr, contractAbi, jsonRpcProviderAlchemy);
@@ -97,122 +135,88 @@ async function main() {
         listenEthersContractEvents({
             eventName,
             contract: ethersJsonRpcAlchemyContract,
-            label: 'ethers.js-rpc-alchemy',
-            numTransactionsToCheck,
-            set: ethersHashesRpcAlchemySet
+            label: ethersJsRpcAlchemyLabel,
+            numBlocksToCheck,
+            map: blockMap,
+            initializeBlockEntry
         }),
         listenEthersContractEvents({
             eventName,
             contract: ethersJsonRpcInfuraContract,
-            label: 'ethers.js-rpc-infura',
-            numTransactionsToCheck,
-            set: ethersHashesRpcInfuraSet
+            label: ethersJsRpcInfuraLabel,
+            numBlocksToCheck,
+            map: blockMap,
+            initializeBlockEntry
         }),
         listenEthersContractEvents({
             eventName,
             contract: ethersWssInfuraContract,
-            label: 'ethers.js-wss-infura',
-            numTransactionsToCheck,
-            set: ethersHashesWssInfuraSet
+            label: ethersJsWssInfuraLabel,
+            numBlocksToCheck,
+            map: blockMap,
+            initializeBlockEntry
         }),
         listenWeb3ContractEvents({
             eventName,
             contract: web3wssInfuraContract,
-            label: 'web3.js-wss-infura',
-            numTransactionsToCheck,
-            set: web3HashesWssInfuraSet
+            label: web3JsWssInfuraLabel,
+            numBlocksToCheck,
+            map: blockMap,
+            initializeBlockEntry
         })]);
-    console.log('ethersHashesRpcAlchemySet.size', ethersHashesRpcAlchemySet.size);
-    console.log('ethersHashesRpcInfuraSet.size', ethersHashesRpcInfuraSet.size);
-    console.log('ethersHashesWssInfuraSet.size', ethersHashesWssInfuraSet.size);
-    console.log('web3HashesWssInfuraSet.size', web3HashesWssInfuraSet.size);
+    
+    function eqSet(as: Set<any>, bs: Set<any>) {
+        if (as.size !== bs.size) return false;
+        for (var a of as) if (!bs.has(a)) return false;
+        return true;
+    }
+    const convertMapToObjDeeply = (o: unknown): unknown => {
+        const recurseOnEntries = (a: Array<any>) => Object.fromEntries(
+            a.map(([k, v]) => [k, convertMapToObjDeeply(v)])
+        );
+        if (o instanceof Set) {
+            o = [...o]
+        }
+        if (o instanceof Map) {
+            return recurseOnEntries([...o]);
+        }
+        else if (Array.isArray(o)) {
+            return o.map(convertMapToObjDeeply);
+        }
+        else if (typeof o === "object" && o !== null) {
+            return recurseOnEntries(Object.entries(o));
+        }
 
-    const otherSets = [ethersHashesRpcInfuraSet, ethersHashesWssInfuraSet, web3HashesWssInfuraSet]; // all except the first one to compare
-
-    // we will sort all sets/arrays, pick one, first the first and last common hashes and then slice the other arrays
-    const ethersHashesArr = [...ethersHashesRpcAlchemySet.values()].sort(); // first set
-    const firstCommonHash = ethersHashesArr.find(hash => otherSets.every((set) => set.has(hash)));
-    const lastCommonHash = [...ethersHashesArr].reverse().find(hash => otherSets.every((set) => set.has(hash)));
-    if (!firstCommonHash) {
-        console.log('no first common hashes?');
+        return o;
+    };
+    // sort block entries by blockNumber
+    const blockEntries = [...blockMap.entries()].sort(([blockNumberA], [blockNumberB]) => blockNumberA - blockNumberB);
+    console.log('blockEntries', blockEntries)
+    const nonEmptyBlockEntries = blockEntries.filter(([, m]) => [...m.values()].every(set => set.size > 0));
+    console.log('nonEmptyBlockEntries', nonEmptyBlockEntries)
+    const firstCommonBlockIdx = nonEmptyBlockEntries.findIndex(([, setsMap]) => [...setsMap.values()].every(set => set.size >= 1));
+    console.log('first block where all sets have at least one tx', firstCommonBlockIdx)
+    if (firstCommonBlockIdx === -1) {
+        console.log('not enough blocks! try again with more')
+        console.log('blockMap=',
+            JSON.stringify(convertMapToObjDeeply(blockMap))
+        )
         return;
     }
-    if (!lastCommonHash) {
-        console.log('no last common hashes?');
-        return;
-    }
-    const ethersHashesRpcAlchemyFixedSet: Set<string> = new Set(ethersHashesArr.slice(ethersHashesArr.indexOf(firstCommonHash), ethersHashesArr.lastIndexOf(lastCommonHash) + 1));
-
-    const ethersHashesRpcInfuraArr = [...ethersHashesRpcInfuraSet.values()].sort();
-    const ethersHashesRpcInfuraFixedSet: Set<string> = new Set(ethersHashesRpcInfuraArr.slice(ethersHashesRpcInfuraArr.indexOf(firstCommonHash), ethersHashesRpcInfuraArr.lastIndexOf(lastCommonHash) + 1));
-
-    const ethersHashesWssInfuraArr = [...ethersHashesWssInfuraSet.values()].sort();
-    const ethersHashesWssInfuraFixedSet: Set<string> = new Set(ethersHashesWssInfuraArr.slice(ethersHashesWssInfuraArr.indexOf(firstCommonHash), ethersHashesWssInfuraArr.lastIndexOf(lastCommonHash) + 1));
-
-    const web3HashesWssInfuraArr = [...web3HashesWssInfuraSet.values()].sort();
-    const web3HashesWssInfuraFixedSet: Set<string> = new Set(web3HashesWssInfuraArr.slice(web3HashesWssInfuraArr.indexOf(firstCommonHash), web3HashesWssInfuraArr.lastIndexOf(lastCommonHash) + 1));
-
-    console.log('ethersHashesRpcAlchemyFixedSet.size', ethersHashesRpcAlchemyFixedSet.size);
-    console.log('ethersHashesRpcInfuraFixedSet.size', ethersHashesRpcInfuraFixedSet.size);
-    console.log('ethersHashesWssInfuraFixedSet.size', ethersHashesWssInfuraFixedSet.size);
-    console.log('web3HashesWssInfuraFixedSet.size', web3HashesWssInfuraFixedSet.size);
-
-    for (const hash of ethersHashesRpcAlchemyFixedSet) {
-        if (!ethersHashesRpcInfuraFixedSet.has(hash)) {
-            console.log('hash in ethers rpc alchemy but not in ethers rpc infura set', hash);
+    const commonBlocks = nonEmptyBlockEntries.slice(firstCommonBlockIdx + 1);
+    const sameTxInAllSets = commonBlocks.every(([blockNumber, setsMap]) => {
+        const allSetsArr = [...setsMap.values()];
+        const [firstSet, ...sets] = allSetsArr;
+        const sameTxInAllSets = sets.every(set => eqSet(set, firstSet));
+        if (!sameTxInAllSets) {
+            console.log(`there is at least a missing tx in blockNumber=${blockNumber}, ${allSetsArr.map(set => JSON.stringify([...set]))}`)
         }
-        if (!ethersHashesWssInfuraFixedSet.has(hash)) {
-            console.log('hash in ethers rpc alchemy but not in ethers wss infura set', hash);
-        }
-        if (!web3HashesWssInfuraFixedSet.has(hash)) {
-            console.log('hash in ethers rpc alchemy but not in web3 wss infura set', hash);
-        }
-    }
-    for (const hash of ethersHashesRpcInfuraFixedSet) {
-        if (!ethersHashesRpcAlchemyFixedSet.has(hash)) {
-            console.log('hash in ethers rpc infura but not in ethers rpc alchemy', hash);
-        }
-        if (!ethersHashesWssInfuraFixedSet.has(hash)) {
-            console.log('hash in ethers rpc infura but not in ethers wss infura set', hash);
-        }
-        if (!web3HashesWssInfuraFixedSet.has(hash)) {
-            console.log('hash in ethers rpc infura but not in web3', hash);
-        }
-    }
-    for (const hash of ethersHashesWssInfuraFixedSet) {
-        if (!ethersHashesRpcAlchemyFixedSet.has(hash)) {
-            console.log('hash in ethers wss infura but not in ethers rpc alchemy', hash);
-        }
-        if (!ethersHashesRpcInfuraFixedSet.has(hash)) {
-            console.log('hash in ethers wss infura but not in ethers rpc infura set', hash);
-        }
-        if (!web3HashesWssInfuraFixedSet.has(hash)) {
-            console.log('hash in ethers wss infura but not in web3 wss infura set', hash);
-        }
-    }
-    for (const hash of web3HashesWssInfuraFixedSet) {
-        if (!ethersHashesRpcAlchemyFixedSet.has(hash)) {
-            console.log('hash in ethers wss infura but not in ethers rpc alchemy', hash);
-        }
-        if (!ethersHashesRpcInfuraFixedSet.has(hash)) {
-            console.log('hash in ethers wss infura but not in ethers rpc infura set', hash);
-        }
-        if (!ethersHashesWssInfuraFixedSet.has(hash)) {
-            console.log('hash in ethers wss infura but not in ethers wss infura set', hash);
-        }
-    }
-
-    console.log('ORIGINAL SETS');
-    console.log('original ethersHashesRpcAlchemySet', JSON.stringify([...ethersHashesRpcAlchemySet.values()]));
-    console.log('original ethersHashesRpcInfuraSet', JSON.stringify([...ethersHashesRpcInfuraSet.values()]));
-    console.log('original ethersHashesWssInfuraSet', JSON.stringify([...ethersHashesWssInfuraSet.values()]));
-    console.log('original web3HashesWssInfuraSet', JSON.stringify([...web3HashesWssInfuraSet.values()]));
-
-    console.log('FIXED SETS');
-    console.log('fixed ethersHashesRpcAlchemyFixedSet', JSON.stringify([...ethersHashesRpcAlchemyFixedSet.values()]));
-    console.log('fixed ethersHashesRpcInfuraFixedSet', JSON.stringify([...ethersHashesRpcInfuraFixedSet.values()]));
-    console.log('fixed ethersHashesWssInfuraFixedSet', JSON.stringify([...ethersHashesWssInfuraFixedSet.values()]));
-    console.log('fixed web3HashesWssInfuraFixedSet', JSON.stringify([...web3HashesWssInfuraFixedSet.values()]));
+        return sameTxInAllSets;
+    });
+    console.log(`sameTxInAllSets=${sameTxInAllSets}=> ${sameTxInAllSets ? 'All good, no missing txs' : 'At least one missing tx'}`);
+    console.log('blockMap=',
+        JSON.stringify(convertMapToObjDeeply(blockMap))
+    )
 }
 
 main().then(() => {
